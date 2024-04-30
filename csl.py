@@ -1,11 +1,11 @@
-#!/usr/bin/python3
-
-import re, sys, os, itertools, docus
+import re, sys, os, itertools, docus, typer
 from _io import TextIOWrapper as FileObject
 from pprint import pprint as pp
 from copy import deepcopy
 
 TOKENS = re.compile("(\[|\]|\(|\)|\<(?:.*?)\>|%\<[\w/\\\s]+\>|-?\d+\.\.-?\d+|\#(?:.*?)\#|\"(?:.*?)\"|-?\d+\.\d+|\;|-?\d+|[!~]?[@\.\w\\\/_]+(?:[\d]+)?)", re.DOTALL)
+
+cli = typer.Typer()
 
 PRESET_METADATA = {
     "version":0.1
@@ -20,6 +20,16 @@ PRESET_CONS = {
     "first":0
 }
 
+CHARS = {
+    "%~~":"~~%",
+    "~~newline":"\n",
+    "~~tab":"\t",
+    "~~bell":"\b",
+    "~~return":"\r",
+    "~~null":"\0",
+    "~~%":"~~"
+}
+
 VER = 0.1
 
 BINDIR = os.path.join(os.path.dirname(sys.argv[0]),"")
@@ -28,6 +38,11 @@ LOCALS = os.path.join(os.getcwd(),"")
 
 if not os.path.isdir(LIBDIR):
     os.mkdir(LIBDIR)
+
+def cindex(string, search):
+    if search not in string:
+        return
+    return string.index(search)+len(search)-1
 
 def flatten_dict(d, parent_key='', sep='.'):
     items = []
@@ -62,7 +77,10 @@ def tokenize(code):
                 result = outer
         else:
             if item.startswith('"') and item.endswith('"'):
-                result.append(item[1:-1])
+                k = item[1:-1]
+                for s, c in CHARS.items():
+                    k = k.replace(s,c)
+                result.append(k)
             elif item.startswith('<') and item.endswith('>'):
                 result.append(item[1:-1])
             elif item.startswith('%<') and item.endswith('>'):
@@ -251,6 +269,20 @@ def conv_tup(lt,r=0):
             lt[pos] = "(" + " ".join(temp) + ")"
     return tuple(lt) if r != 0 else "(" + " ".join(lt) + ")"
 
+def sstr(s,n=20):
+    if n < 0:
+        return 'Too large!'
+    k = str(s)
+    return k[:n]+"..." if len(k) >= n else k
+
+def pdict(d,id=0,sid="    "):
+    for n, i in d.items():
+        if isinstance(i,dict):
+            print(sid*id+n)
+            pdict(i,id=id+1,sid=sid) if i else print(sid*(id+1)+"[No content]")
+        else:
+            print(sid*id+n+" : "+sstr(i,70-len(sid*id+n+" : ")))
+
 class inter:
     def __init__(self,path,argv=None):
         self.data = {}
@@ -367,18 +399,33 @@ class inter:
             elif isinstance(ins, list) and argc == 0: # meep
                 if self.run(ins,bname=bname,show_error=show_error):
                     break
-            elif ins == "scope" and argc == 1 and types == (list,): # for modules and clean scopes :33
+            elif ins == "scope" and argc == 2 and types == (str,list): # for modules and clean scopes :33
                 self.new_scope()
                 self.local_set("export",{})
-                if self.run(args[0],bname=bname,show_error=show_error):
+                if self.run(args[1],bname=args[0],show_error=show_error):
                     break
                 shez = deepcopy(self.local_get("export",{}))
                 self.pop_scope()
-                self.lscope.update(shez)
+                self.local_set(args[0],shez)
                 del shez
-            elif atypes == (str, list): # custom block
+            elif atypes == (str, list) and argc == 2: # custom block
+                self.new_scope()
+                self.local_set("this",self.local_get(ins,{}))
                 if self.run(args[0],bname=ins,show_error=show_error):
                     break
+                shez = deepcopy(self.local_get("this",{}))
+                self.pop_scope()
+                self.local_set(ins,shez)
+                del shez
+            elif ins == "class" and types == (str, list) and argc == 2: # custom block
+                self.new_scope()
+                self.local_set("this",self.local_get(args[0],{}))
+                if self.run(args[1],bname=args[0],show_error=show_error):
+                    break
+                shez = deepcopy(self.local_get("this",{}))
+                self.pop_scope()
+                self.local_set(args[0],shez)
+                del shez
             ## Variables
             elif ins == "set" and argc == 2 and types[0] == str:
                 name, val = args
@@ -416,10 +463,19 @@ class inter:
                 self.global_rem(args[0])
             elif ins == "dir" and argc == 0:
                 print(*self.lscope.keys(),sep=", ")
+            elif ins == "fdir" and argc == 0:
+                pdict(self.lscope)
             elif ins == "dir" and argc == 1 and types == (dict,):
                 print(*args[0].keys(),sep=", ")
+            elif ins == "dir" and argc == 1:
+                print(args[0])
             elif ins == "pydir" and argc == 1:
                 print(*dir(args[0]),sep=", ")
+            elif ins == "unpack" and argc == 1 and types == (dict,):
+                for keys, values in args[0].items():
+                    self.local_set(keys, values)
+                if args[0]:
+                    del keys, values
             ## Error
             elif ins == "err" and argc == 1 and types == (str,):
                 print("Error:",args[0]) if show_error else None
@@ -433,10 +489,10 @@ class inter:
             elif ins == "stop":
                 return 0
             ## Function
-            elif ins == "def" and argc == 4 and types == (str,tuple,str,list):
-                name, params, doc, body = args
-                self.global_set(join("root", "func", name), {"_params_":params, "_body_":body, "_doc_":doc, "_name_":name, "_from_":bname})
-                del name, params, body, doc
+            elif ins == "def" and argc == 3 and types == (str,tuple,list):
+                name, params, body = args
+                self.global_set(join("root", "func", name), {"_params_":params, "_body_":body, "_doc_":"", "_name_":name, "_from_":bname})
+                del name, params, body
             elif ins == "call" and argc == 2 and types == (str, tuple):
                 fname, params = args
                 k = self.global_get(join("root","func",fname))
@@ -455,14 +511,14 @@ class inter:
                     return 1
                 self.pop_scope()
                 del params, k, fname
-            elif ins == "!method" and argc == 4 and types == (str,tuple,str,list):
-                name, params, doc, body = args
+            elif ins == "!method" and argc == 3 and types == (str,tuple,list):
+                name, params, body = args
                 cobj, name = name.split('.',1)
                 if cobj not in self.lscope:
                     print(f'Error: Object `{cobj}` does not exist!') if show_error else None
                     break
-                self.global_set(join(cobj, "_func_", name), {"_params_":params, "_body_":body, "_doc_":doc, "_from_":cobj})
-                del name, params, body, doc, cobj
+                self.local_set(join(cobj, "_func_", name), {"_params_":params, "_body_":body, "_doc_":"", "_from_":cobj})
+                del name, params, body, cobj
             elif ins == "!call" and argc == 2 and types == (str, tuple):
                 fname, params = args
                 cobj, fname = fname.split('.',1)
@@ -501,7 +557,7 @@ class inter:
                     self.local_set(name, value)
                 if self.run(k["_body_"], bname=k["_name_"],show_error=show_error):
                     self.pop_scope()
-                    return 1
+                    break
                 self.pop_scope()
                 del params, k, body
             elif ins == "help" and argc == 1 and types == (str,):
@@ -571,25 +627,24 @@ class inter:
                 if self.run(k["_body_"], bname=f"{args[1]}.init",show_error=show_error):
                     self.pop_scope()
                     print(f"Error: While running the contructor of `{args[1]}`!") if show_error else None
-                    return 1
+                    return
                 self.non_local_set(args[1], self.local_get("self"))
                 self.pop_scope()
                 del k
             elif ins == "delete" and argc == 1 and types == (str,):
                 k = self.local_get(join(args[0],"_func_","_del_"))
+                if "_del_" not in self.local_get(join(args[0],"_func_")):
+                    print(f"Error: Call: Function `_del_` of object `{args[0]}` does not exist!") if show_error else None
+                    break
                 if k == "0":
                     print(f"Error Object `{args[0]}` does not exist!") if show_error else None
                     break
-                if "_del_" not in self.local_get(join(args[1],"_func_")):
-                    print(f"Error: Call: Function `_del_` of object `{args[0]}` does not exist!") if show_error else None
-                    break
                 self.new_scope()
                 self.local_set("self", self.non_local_get(args[0]))
-                if self.run(k["_body_"], bname=f"{args[1]}._del_",show_error=show_error):
+                if self.run(k["_body_"], bname=f"{args[0]}._del_",show_error=show_error):
                     self.pop_scope()
                     print(f"Error: While running the destroyer of `{args[0]}`!") if show_error else None
-                    return 1
-                self.non_local_set(args[1], self.local_get("self"))
+                    break
                 self.pop_scope()
                 self.local_rem(args[0])
                 del k
@@ -737,6 +792,18 @@ class inter:
                     if self.run(c,bname=bname,show_error=show_error):
                         break
                 del ot, o, c
+            elif ins == "isnone" and argc == 2 and types == (str,list):
+                ot, c = args
+                if ot == "0":
+                    if self.run(c,bname=bname,show_error=show_error):
+                        break
+                del ot, c
+            elif ins == "isntnone" and argc == 2 and types == (str,list):
+                ot, c = args
+                if ot != "0":
+                    if self.run(c,bname=bname,show_error=show_error):
+                        break
+                del ot, c
             ## File IO
             elif ins == "open" and argc == 3 and types == (str,str,str):
                 if not os.path.isfile(os.path.join(local_path,args[0])) and args[1] in ("r","rb"):
@@ -744,7 +811,8 @@ class inter:
                     break
                 self.local_set(join(args[2],"file"),open(os.path.join(local_path,args[0]),args[1]))
                 self.local_set(join(args[2],"mode"),args[1])
-                self.local_set(join(args[2],"path"),args[0])
+                self.local_set(join(args[2],"name"),args[2])
+                self.local_set(join(args[2],"path"),os.path.join(local_path,args[0]))
             elif ins == "read" and argc == 2 and types == (dict,str):
                 if "file" not in args[0] or not isinstance(args[0]["file"],FileObject):
                     print("Error: Invalid object! Must be a file object!") if show_error else None
@@ -764,23 +832,31 @@ class inter:
                     print("Error: Invalid object! Must be a file object!") if show_error else None
                     break
                 args[0]["file"].close()
+                self.local_rem(args[0]["name"])
+            elif ins == "delfile" and argc == 1 and types == (dict,):
+                if "file" not in args[0] or not isinstance(args[0]["file"],FileObject):
+                    print("Error: Invalid object! Must be a file object!") if show_error else None
+                    break
+                args[0]["file"].close()
+                os.remove(args[0]["path"])
+                self.local_rem(args[0]["name"])
             ## Conditions
             elif ins == "ifTrue" and argc == 4 and types[-1] == list:
                 val0, com, val1, body = args
                 vals = types[:3]
                 val = (vals[0],vals[2])
                 if val0 == val1 and com == "eq":
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 elif val0 != val1 and com == "ne":
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 elif val0 > val1 and com == "gt" and val in ((int,int),(float,int),(int,float)):
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 elif val0 < val1 and com == "lt" and val in ((int,int),(float,int),(int,float)):
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 elif val0 >= val1 and com == "ge" and val in ((int,int),(float,int),(int,float)):
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 elif val0 <= val1 and com == "le" and val in ((int,int),(float,int),(int,float)):
-                    self.run(body,bname=bname+":if:"+com)
+                    self.run(body,bname=bname)
                 else:
                     print('Error: Invalid comparison!') if show_error else None
                     break
@@ -797,23 +873,38 @@ class inter:
             return 0
         print("--===[ Error: In block " + f"`{bname}`".ljust(30," ") + "]===--") if show_error else None
         return 1
-k = inter("~",argv=sys.argv)
-if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
-    k = inter(os.path.dirname(sys.argv[1]),argv=sys.argv)
-    k.run(open(sys.argv[1]).read())
-elif sys.argv[1:] == ["help"]:
+@cli.command()
+def run(file: str, hasargs: bool=False):
+    args = [file]
+    if hasargs:
+        print('Use Pipes `|` to pipe in args, separate by newline.')
+        while True:
+            l = input(str(len(args))+": ")
+            if not l:
+                break
+            args.append(l)
+    k = inter(os.path.dirname(file),argv=args)
+    k.run(open(file).read())
+@cli.command()
+def info():
     print(f'''CSLang [v{VER}]: Cryptic Scripting Language is a programming language capable of OOP.Its like
 mixing Python, Lisp and Lua together and pointing a neutron beam ray at it (our indecies start at zero though).
 It has easy syntax and easy to learn. It cant interface with any programming languages (yet).
 So sit tight and enjoy writing code in it! Have fun!''')
-elif len(sys.argv) > 1 and sys.argv[1] == "help" and len(sys.argv) == 3:
-    _, _, h = sys.argv
-    docus.find_docu(h)
-else:
+@cli.command()
+def instruction_info(instruction: str):
+    docus.find_docu(instruction)
+@cli.command()
+def repr():
+    k = inter("~",argv=sys.argv)
     print(f"CSLang v{VER} - REPR")
     while True:
         kk = input(': ')
-        if kk == "stop":
+        if kk == "end":
             exit()
         else:
             k.run(kk)
+if len(sys.argv) == 1:
+    repr()
+else:
+    cli()

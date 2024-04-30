@@ -1,0 +1,7 @@
+import_global math.txt;
+
+dir @math;
+
+!call math.lshift(10);
+
+print @math.lshift.rnum;

@@ -1,26 +1,13 @@
 
-scope [
-    set lrshift_doc <
-    Returns `rnum`
-      lshift: Returns number * 2
-      rshift: Returns number // 2 # floor div #
-    >;
-
-    object export.math [];
-    .math [
-        !method export.math.lshift(number) @lrshift_doc [
-            isnttype int @number [
-                err "math: `number` must be of type int!";
-            ];
-            mul rnum @number 2;
-            return rnum;
+scope math [
+    object math [];
+    !method math.lshift(number) <Returns `rnum`> [
+        isnttype int @number [
+            err "Error: `number` must be of type int!"
         ];
-        !method export.math.rshift(number) @lrshift_doc [
-            isnttype int @number [
-                err "math: `number` must be of type int!";
-            ];
-            fdiv rnum @number 2;
-            return rnum;
-        ];
+        mul rnum @number 2;
+        return rnum;
     ];
 ];
+
+set math @math.math;
